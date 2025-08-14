@@ -26,6 +26,7 @@ export type FormSlotProps = UnwrapRef<
     | 'resetForm'
     | 'resetField'
     | 'controlledValues'
+    | 'valueChangeHandler'
   >
 > & {
   handleSubmit: (evt: Event | SubmissionHandler, onSubmit?: SubmissionHandler) => Promise<unknown>;
@@ -79,6 +80,13 @@ const FormImpl = /** #__PURE__ */ defineComponent({
       type: String,
       default: 'Form',
     },
+    valueChangeHandler: {
+      type: Object as PropType<{
+        callback?: (changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void;
+        options?: { flush?: 'sync' | 'post' };
+      }>,
+      default: undefined,
+    },
   },
   setup(props, ctx) {
     const validationSchema = toRef(props, 'validationSchema');
@@ -105,6 +113,7 @@ const FormImpl = /** #__PURE__ */ defineComponent({
       setFieldTouched,
       setTouched,
       resetField,
+      valueChangeHandler,
     } = useForm({
       validationSchema: validationSchema.value ? validationSchema : undefined,
       initialValues: props.initialValues,
@@ -113,6 +122,7 @@ const FormImpl = /** #__PURE__ */ defineComponent({
       validateOnMount: props.validateOnMount,
       keepValuesOnUnmount: keepValues,
       name: props.name,
+      valueChangeHandler: props.valueChangeHandler,
     });
 
     const submitForm = handleSubmit((_, { evt }) => {
@@ -178,6 +188,7 @@ const FormImpl = /** #__PURE__ */ defineComponent({
         getValues,
         getMeta,
         getErrors,
+        valueChangeHandler,
       };
     }
 
@@ -199,6 +210,7 @@ const FormImpl = /** #__PURE__ */ defineComponent({
       values,
       meta,
       errors,
+      valueChangeHandler,
     });
 
     return function renderForm() {
@@ -251,6 +263,7 @@ export const Form = FormImpl as typeof FormImpl & {
     meta: FormSlotProps['meta'];
     values: FormSlotProps['values'];
     errors: FormSlotProps['errors'];
+    valueChangeHandler: FormContext['valueChangeHandler'];
     $slots: {
       default: (arg: FormSlotProps) => VNode[];
     };

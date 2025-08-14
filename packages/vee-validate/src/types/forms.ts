@@ -359,6 +359,24 @@ export interface PrivateFormContext<
   isFieldTouched<TPath extends Path<TValues>>(path: TPath): boolean;
   isFieldDirty<TPath extends Path<TValues>>(path: TPath): boolean;
   isFieldValid<TPath extends Path<TValues>>(path: TPath): boolean;
+  /**
+   * Subscribe to values changes at specific JSON paths.
+   * The callback receives a list of changed JSON paths and the latest form values.
+   * Returns an unsubscribe function.
+   */
+  valueChangeHandler: {
+    callback?: (changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void;
+    options?: { flush?: 'sync' | 'post' };
+  };
+  /**
+   * Internal notifier used by field/array utilities to emit value-change events.
+   * Not part of the public FormContext API.
+   */
+  notifyValuesChanged(
+    changes:
+      | { path: string; oldValue: unknown; newValue: unknown }
+      | Array<{ path: string; oldValue: unknown; newValue: unknown }>,
+  ): void;
   defineField<
     TPath extends Path<TValues>,
     TValue = PathValue<TValues, TPath>,
@@ -420,8 +438,13 @@ export interface FormContext<TValues extends GenericObject = GenericObject, TOut
     | 'markForUnmount'
     | 'keepValuesOnUnmount'
     | 'values'
+    | 'notifyValuesChanged'
   > {
   values: TValues;
   handleReset: () => void;
   submitForm: (e?: unknown) => Promise<void>;
+  valueChangeHandler: {
+    callback?: (changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void;
+    options?: { flush?: 'sync' | 'post' };
+  };
 }

@@ -117,10 +117,12 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
   function remove(idx: number) {
     const pathName = toValue(arrayPath);
     const pathValue = getFromPath<TValue[]>(form?.values, pathName);
-    if (!pathValue || !Array.isArray(pathValue)) {
+    if (!pathValue || !Array.isArray(pathValue) || idx < 0 || idx >= pathValue.length) {
       return;
     }
 
+    // Snapshot the previous array before mutation
+    const prevArray = [...pathValue];
     const newValue = [...pathValue];
     newValue.splice(idx, 1);
     const fieldPath = pathName + `[${idx}]`;
@@ -128,6 +130,12 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
     form.unsetInitialValue(fieldPath);
     setInPath(form.values, pathName, newValue);
     fields.value.splice(idx, 1);
+    // All indices from idx to end shift
+    const affected = Array.from({ length: prevArray.length - idx }, (_, k) => idx + k);
+    form.notifyValuesChanged(
+      affected.map(i => ({ path: `${pathName}[${i}]`, oldValue: prevArray?.[i], newValue: newValue[i] })),
+    );
+
     afterMutation();
   }
 
@@ -145,6 +153,7 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
     form.stageInitialValue(pathName + `[${newValue.length - 1}]`, value);
     setInPath(form.values, pathName, newValue);
     fields.value.push(createEntry(value));
+    form.notifyValuesChanged({ path: `${pathName}[${newValue.length - 1}]`, oldValue: undefined, newValue: value });
     afterMutation();
   }
 
@@ -166,9 +175,14 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
     const tempEntry = newFields[indexA];
     newFields[indexA] = newFields[indexB];
     newFields[indexB] = tempEntry;
+    const prev = getFromPath(form.values, pathName) as TValue[] | undefined;
     setInPath(form.values, pathName, newValue);
     fields.value = newFields;
     updateEntryFlags();
+    form.notifyValuesChanged([
+      { path: `${pathName}[${indexA}]`, oldValue: prev?.[indexA], newValue: newValue[indexA] },
+      { path: `${pathName}[${indexB}]`, oldValue: prev?.[indexB], newValue: newValue[indexB] },
+    ]);
   }
 
   function insert(idx: number, initialValue: TValue) {
@@ -184,16 +198,25 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
 
     newValue.splice(idx, 0, value);
     newFields.splice(idx, 0, createEntry(value));
+    const prev = getFromPath(form.values, pathName) as TValue[] | undefined;
     setInPath(form.values, pathName, newValue);
     fields.value = newFields;
+    // All indices from idx to end shift
+    const affected = Array.from({ length: newValue.length - idx }, (_, k) => idx + k);
+    form.notifyValuesChanged(
+      affected.map(i => ({ path: `${pathName}[${i}]`, oldValue: prev?.[i], newValue: newValue[i] })),
+    );
     afterMutation();
   }
 
   function replace(arr: TValue[]) {
     const pathName = toValue(arrayPath);
     form.stageInitialValue(pathName, arr);
+    const prev = getFromPath(form.values, pathName) as TValue[] | undefined;
     setInPath(form.values, pathName, arr);
     initFields();
+    const affected = Array.from({ length: Array.isArray(arr) ? arr.length : 0 }, (_, k) => k);
+    form.notifyValuesChanged(affected.map(i => ({ path: `${pathName}[${i}]`, oldValue: prev?.[i], newValue: arr[i] })));
     afterMutation();
   }
 
@@ -204,8 +227,12 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
       return;
     }
 
+    const prev = getFromPath(form.values, `${pathName}[${idx}]`);
     setInPath(form.values, `${pathName}[${idx}]`, value);
     form?.validate({ mode: 'validated-only' });
+    if (!isEqual(prev, value)) {
+      form.notifyValuesChanged({ path: `${pathName}[${idx}]`, oldValue: prev, newValue: value });
+    }
   }
 
   function prepend(initialValue: TValue) {
@@ -218,9 +245,23 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
     }
 
     const newValue = [value, ...normalizedPathValue];
+    const prev = getFromPath(form.values, pathName) as TValue[] | undefined;
     setInPath(form.values, pathName, newValue);
     form.stageInitialValue(pathName + `[0]`, value);
     fields.value.unshift(createEntry(value));
+    // All indices shift
+    const affected = Array.from({ length: newValue.length }, (_, k) => `${pathName}[${k}]`).filter(p => {
+      const i = Number(p.match(/\[(\d+)\]$/)?.[1] || 0);
+      const before = prev?.[i];
+      const after = newValue[i];
+      return !isEqual(before, after);
+    });
+    form.notifyValuesChanged(
+      affected.map(p => {
+        const i = Number(p.match(/\[(\d+)\]$/)?.[1] || 0);
+        return { path: p, oldValue: prev?.[i], newValue: newValue[i] };
+      }),
+    );
     afterMutation();
   }
 
@@ -242,8 +283,16 @@ export function useFieldArray<TValue = unknown>(arrayPath: MaybeRefOrGetter<stri
     const movedValue = newValue[oldIdx];
     newValue.splice(oldIdx, 1);
     newValue.splice(newIdx, 0, movedValue);
+    const prev = getFromPath(form.values, pathName) as TValue[] | undefined;
     setInPath(form.values, pathName, newValue);
     fields.value = newFields;
+    // Affected indices are the range between old and new positions (inclusive)
+    const start = Math.min(oldIdx, newIdx);
+    const end = Math.max(oldIdx, newIdx);
+    const affected = Array.from({ length: end - start + 1 }, (_, k) => start + k);
+    form.notifyValuesChanged(
+      affected.map(i => ({ path: `${pathName}[${i}]`, oldValue: prev?.[i], newValue: newValue[i] })),
+    );
     afterMutation();
   }
 

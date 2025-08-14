@@ -63,6 +63,7 @@ import {
   debounceAsync,
   withLatest,
   isEqual,
+  isEmptyContainer,
   isTypedSchema,
   normalizeErrorItem,
   omit,
@@ -93,6 +94,10 @@ export interface FormOptions<
   validateOnMount?: boolean;
   keepValuesOnUnmount?: MaybeRef<boolean>;
   name?: string;
+  valueChangeHandler?: {
+    callback?: (changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void;
+    options?: { flush?: 'sync' | 'post' };
+  };
 }
 
 let FORM_COUNTER = 0;
@@ -269,6 +274,84 @@ export function useForm<
   });
 
   const schema = opts?.validationSchema;
+
+  // Values change subscriptions
+  type ValuesChangedListener = {
+    cb: (changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void;
+    flush: 'sync' | 'post';
+  };
+  let valuesChangedListener: ValuesChangedListener | null = null;
+  let queuedChanges: Map<string, { path: string; oldValue: unknown; newValue: unknown }> | null = null;
+  let emitScheduled = false;
+
+  const valueChangeHandler = reactive({
+    callback: opts?.valueChangeHandler?.callback as
+      | ((changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void)
+      | undefined,
+    options: { flush: (opts?.valueChangeHandler?.options?.flush || 'post') as 'sync' | 'post' },
+  });
+
+  // no-op
+
+  // Watch for changes to valueChangeHandler and update listeners accordingly
+  watch(
+    () => ({ callback: valueChangeHandler.callback, options: valueChangeHandler.options }),
+    newHandler => {
+      // Replace existing listener
+      if (newHandler.callback) {
+        valuesChangedListener = {
+          cb: newHandler.callback,
+          flush: newHandler.options?.flush || 'post',
+        };
+      } else {
+        valuesChangedListener = null;
+      }
+    },
+    { immediate: true, deep: true },
+  );
+
+  function scheduleValuesChangedEmit() {
+    if (emitScheduled) return;
+    emitScheduled = true;
+    nextTick(() => {
+      const changes = queuedChanges ? Array.from(queuedChanges.values()) : [];
+      queuedChanges = null;
+      emitScheduled = false;
+      if (!changes.length) return;
+
+      if (valuesChangedListener && valuesChangedListener.flush === 'post') {
+        valuesChangedListener.cb(changes);
+      }
+    });
+  }
+
+  function notifyValuesChanged(
+    changes:
+      | { path: string; oldValue: unknown; newValue: unknown }
+      | Array<{ path: string; oldValue: unknown; newValue: unknown }>,
+  ) {
+    const list = Array.isArray(changes) ? changes : [changes];
+    // normalize then filter out no-op changes and undefined -> empty container transitions
+    const fieldChanges = list
+      .map(c => ({
+        newValue: deepCopy(c.newValue),
+        oldValue: deepCopy(c.oldValue),
+        path: normalizeFormPath(c.path),
+      }))
+      .filter(c => !isEqual(c.oldValue, c.newValue))
+      .filter(c => !(c.oldValue === undefined && isEmptyContainer(c.newValue)));
+
+    if (valuesChangedListener && valuesChangedListener.flush === 'sync') {
+      valuesChangedListener.cb(fieldChanges);
+    } else {
+      // queue for post-flush listeners
+      if (!queuedChanges) queuedChanges = new Map();
+      fieldChanges.forEach(c => {
+        queuedChanges!.set(c.path, c);
+      });
+      scheduleValuesChangedEmit();
+    }
+  }
 
   function createPathState<TPath extends Path<TValues>>(
     path: MaybeRefOrGetter<TPath>,
@@ -682,6 +765,11 @@ export function useForm<
     isFieldTouched,
     isFieldDirty,
     isFieldValid,
+    valueChangeHandler: valueChangeHandler as {
+      callback?: (changes: { path: string; oldValue: unknown; newValue: unknown }[]) => void;
+      options?: { flush?: 'sync' | 'post' };
+    },
+    notifyValuesChanged,
   };
 
   /**
@@ -699,7 +787,10 @@ export function useForm<
       createPathState(path);
     }
 
-    setInPath(formValues, path, clonedValue);
+    // only notify if the value actually changed
+    const previousValue = getFromPath(formValues as any, path);
+    setInPath(formValues as any, path, clonedValue);
+    notifyValuesChanged({ path, oldValue: previousValue, newValue: clonedValue });
     if (shouldValidate) {
       validateField(path);
     }
@@ -728,7 +819,42 @@ export function useForm<
    * Sets multiple fields values
    */
   function setValues(fields: PartialDeep<TValues>, shouldValidate = true) {
-    merge(formValues, fields);
+    const changedPaths: string[] = [];
+    function joinPath(base: string, segment: string | number) {
+      if (typeof segment === 'number') return `${base}[${segment}]`;
+      return base ? `${base}.${segment}` : segment;
+    }
+    // collect only changed leaf paths by comparing against current values
+    function collectAllLeaves(base: string, patch: unknown) {
+      if (Array.isArray(patch)) {
+        patch.forEach((item, idx) => {
+          const nextBase = joinPath(base, idx);
+          collectAllLeaves(nextBase, item);
+        });
+        return;
+      }
+
+      if (patch && typeof patch === 'object') {
+        Object.keys(patch as Record<string, unknown>).forEach(key => {
+          const nextBase = joinPath(base, key);
+          collectAllLeaves(nextBase, (patch as Record<string, unknown>)[key]);
+        });
+        return;
+      }
+      changedPaths.push(base);
+    }
+
+    collectAllLeaves('', fields as unknown);
+    // snapshot old/new before mutating
+    const changes = changedPaths.map(p => ({
+      path: p,
+      oldValue: getFromPath(formValues as any, p),
+      newValue: getFromPath(fields as any, p),
+    }));
+    merge(formValues as any, fields);
+    if (changes.length) {
+      notifyValuesChanged(changes);
+    }
     // regenerate the arrays when the form values change
     fieldArrays.forEach(f => f && f.reset());
 
